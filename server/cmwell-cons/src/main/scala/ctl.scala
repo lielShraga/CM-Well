@@ -182,7 +182,8 @@ abstract class Host(user: String,
                     minMembers: Option[Int] = None,
                     haProxy: Option[HaProxy],
                     withElk: Boolean = false,
-                    isDebug: Boolean = false) {
+                    isDebug: Boolean = false,
+                    subjectsInSpAreHttps: Boolean = false) {
 
   var sudoerCredentials: Option[Credentials] = None
 
