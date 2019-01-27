@@ -19,10 +19,11 @@ import java.util.Properties
 import akka.actor.{ActorRef, ActorSystem}
 import cmwell.bg.{CMWellBGActor, ShutDown}
 import cmwell.common.{CommandSerializer, OffsetsService, WriteCommand, ZStoreOffsetsService}
-import cmwell.domain.{FieldValue, ObjectInfoton}
+import cmwell.domain.{FieldValue, Infoton, ObjectInfoton}
 import cmwell.driver.Dao
 import cmwell.fts._
 import cmwell.irw.IRWService
+import cmwell.util.{Box, FullBox}
 import cmwell.util.testSuitHelpers.test.EsCasKafkaZookeeperDockerSuite
 import cmwell.zstore.ZStore
 import com.typesafe.config.{Config, ConfigFactory, ConfigValueFactory}
@@ -30,16 +31,17 @@ import com.typesafe.scalalogging.LazyLogging
 import org.apache.kafka.clients.producer.{KafkaProducer, ProducerRecord}
 import org.elasticsearch.action.admin.indices.delete.DeleteIndexRequest
 import org.elasticsearch.common.unit.TimeValue
-import org.scalatest.{BeforeAndAfterAll, FlatSpec, Matchers}
+import org.scalatest.{AsyncFlatSpec, BeforeAndAfterAll, FlatSpec, Matchers}
 
-import scala.concurrent.Await
+import scala.concurrent.{Await, Future}
 import scala.concurrent.duration._
 import scala.io.Source
 
 /**
   * Created by israel on 13/09/2016.
   */
-class BGResilienceSpec extends FlatSpec with BeforeAndAfterAll with BgEsCasKafkaZookeeperDockerSuite with Matchers with LazyLogging {
+case class CasElasResponse(casandraRes:Future[Box[Infoton]], elasticRes:Future[FTSSearchResponse], index:Int)
+class BGResilienceSpec extends AsyncFlatSpec with BeforeAndAfterAll with BgEsCasKafkaZookeeperDockerSuite with Matchers with LazyLogging {
 
   var kafkaProducer:KafkaProducer[Array[Byte], Array[Byte]] = _
   var cmwellBGActor:ActorRef = _
@@ -51,7 +53,6 @@ class BGResilienceSpec extends FlatSpec with BeforeAndAfterAll with BgEsCasKafka
   var ftsServiceES:FTSService = _
   var bgConfig:Config = _
   var actorSystem:ActorSystem = _
-  import concurrent.ExecutionContext.Implicits.global
 
   override def beforeAll = {
     //notify ES to not set Netty's available processors
@@ -98,30 +99,41 @@ class BGResilienceSpec extends FlatSpec with BeforeAndAfterAll with BgEsCasKafka
     // send them all
     pRecords.foreach { kafkaProducer.send(_)}
 
-    // scalastyle:off
-    println("waiting for 10 seconds")
-    Thread.sleep(15000)
-    // scalastyle:on
+    val casElasResultList = for(i <- 0 until numOfCommands) yield {
+      CasElasResponse(
 
-    for( i <- 0 until numOfCommands) {
-      val nextResult = Await.result(irwService.readPathAsync(s"/cmt/cm/bg-test/circumvented_bg/info$i"), 5.seconds)
-      withClue(nextResult, s"/cmt/cm/bg-test/circumvented_bg/info$i"){
-        nextResult should not be empty
-      }
+        cmwell.util.concurrent.spinCheck(500.millis, true)(irwService.readPathAsync(s"/cmt/cm/bg-test/circumvented_bg/info$i")) {
+          case FullBox(readInfoton) => true
+          case _ => false
+        },
+        null,
+        i)
     }
 
-    for( i <- 0 until numOfCommands) {
-      val searchResponse = Await.result(
-        ftsServiceES.search(
-          pathFilter = None,
-          fieldsFilter = Some(SingleFieldFilter(Must, Equals, "system.path", Some(s"/cmt/cm/bg-test/circumvented_bg/info$i"))),
-          datesFilter = None,
-          paginationParams = PaginationParams(0, 200)
-        ),
-        10.seconds
-      )
-      withClue(s"/cmt/cm/bg-test/circumvented_bg/info$i"){
-        searchResponse.infotons.size should equal(1)
+    cmwell.util.concurrent.spinCheck(1.seconds, true, 1.minutes)(ftsServiceES.thinSearch(
+      pathFilter = None,
+      fieldsFilter = Some(SingleFieldFilter(Must, Equals, "system.parent.parent_hierarchy", Some("/cmt/cm/bg-test/circumvented_bg"))),
+      datesFilter = None,
+      paginationParams = PaginationParams(0, 2000))) {
+      case x: FTSThinSearchResponse => x.length == 1500
+      case _ => false
+    }.map{ searchResponse =>
+      withClue(searchResponse, s"/cmt/cm/bg-test/circumvented_bg") {
+        searchResponse.length should equal(1500)
+      }
+    }
+//    val allCasandraAssertionResults = casElasResultList.map(res => assertCasResponse(res))
+//    val allRes = Future.sequence(allCasandraAssertionResults).map(res=> res.forall(i => i == succeed))
+//    allRes.map(res=> if (res) succeed else fail())
+
+  }
+
+  private def assertCasResponse(casElasticResponse:CasElasResponse) = {
+
+    val i = casElasticResponse.index
+    casElasticResponse.casandraRes.map {res=>
+      withClue(res, s"/cmt/cm/bg-test/circumvented_bg/info$i") {
+        res should not be empty
       }
     }
   }
