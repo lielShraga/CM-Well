@@ -370,7 +370,8 @@ class IterationsTests extends AsyncFunSpec with Matchers with Inspectors with He
 
       it("should create iterator-id") {
         h0.map {
-          case (status, _, hits, infotons, debug) => withClue(debug) {
+          case (status, id, hits, infotons, debug) => withClue(debug) {
+           println("Lala itertator Id=" + id)
             status should be(200)
             hits should be(Some(49))
             infotons should be(Some(true, 0))

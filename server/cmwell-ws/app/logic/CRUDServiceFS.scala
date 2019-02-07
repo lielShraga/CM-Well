@@ -32,6 +32,7 @@ import cmwell.stortill.{Operations, ProxyOperations}
 import cmwell.util.concurrent.SingleElementLazyAsyncCache
 import cmwell.util.{Box, BoxedFailure, EmptyBox, FullBox}
 import cmwell.ws.Settings
+import cmwell.ws.adt.{ConsumeState, CreateIteratorState, IteratorState, SortedConsumeState}
 import cmwell.ws.qp.Encoder
 import cmwell.zcache.ZCache
 import cmwell.zstore.ZStore
@@ -807,7 +808,7 @@ class CRUDServiceFS @Inject()(implicit ec: ExecutionContext, sys: ActorSystem) e
                   scrollTTL: Long,
                   withHistory: Boolean = false,
                   withDeleted: Boolean = false,
-                  debugInfo: Boolean = false): Future[IterationResults] = {
+                  debugInfo: Boolean = false, firstExecution:Boolean = true): Future[IterationResults] = {
     ftsService
       .startScrollEliNew(pathFilter,
         fieldsFilters,
@@ -816,9 +817,11 @@ class CRUDServiceFS @Inject()(implicit ec: ExecutionContext, sys: ActorSystem) e
         scrollTTL,
         withHistory,
         withDeleted,
-        debugInfo = debugInfo)
+        debugInfo = debugInfo,
+        firstExecution = firstExecution)
       .map { ftsResults =>
         val response = ftsResults.response
+        logger.error("lala, actual scroll id=" + response.scrollId)
         IterationResults(response.scrollId, response.total, Some(response.infotons), debugInfo = ftsResults.searchQueryStr)
       }
   }
@@ -869,38 +872,66 @@ class CRUDServiceFS @Inject()(implicit ec: ExecutionContext, sys: ActorSystem) e
   }
 
   def scroll(scrollId: String, scrollTTL: Long, withData: Boolean): Future[IterationResults] = {
-
-    val searchResultFuture = ftsService.scroll(scrollId, scrollTTL)
-    val results = withData match {
-      case false =>
-        searchResultFuture.map { ftsResults =>
-        IterationResults(ftsResults.scrollId, ftsResults.total, Some(ftsResults.infotons))
-      }
-      case true =>
-        searchResultFuture.flatMap { ftsResults =>
-          irwService
-            .readUUIDSAsync(ftsResults.infotons.map {
-          _.uuid
-            }.toVector, level)
-            .map { infotonsSeq =>
-          if(infotonsSeq.exists(_.isEmpty)) {
-                val esUuidsSet: Set[String] =
-                  ftsResults.infotons.map(_.uuid)(scala.collection.breakOut[Seq[Infoton], String, Set[String]])
-                val casUuidsSet: Set[String] = infotonsSeq.collect { case FullBox(i) => i.uuid }(
-                  scala.collection.breakOut[Seq[Box[Infoton]], String, Set[String]]
-                )
-                logger.error(
-                  "some uuids retrieved from ES, could not be retrieved from cassandra: " + esUuidsSet
-                    .diff(casUuidsSet)
-                    .mkString("[", ",", "]")
-                )
+//    logger.error("boom, scrollId.substring(0, 4)=" + IteratorState.decodeCreateIteratorKey(scrollId.substring(0, 4)))
+    val cmWellScrollLength = IteratorState.encodedCmwelScrollId.length
+    if (scrollId.length >=cmWellScrollLength && scrollId.substring(0, cmWellScrollLength) == IteratorState.encodedCmwelScrollId){
+      val createIteratorStateTry = IteratorState.decode[CreateIteratorState](scrollId.substring(24))
+      logger.info("boom, createIteratorStateTry" + createIteratorStateTry)
+      createIteratorStateTry.map {
+        case CreateIteratorState(pathFilter,
+        fieldsFilter,
+        datesFilter,
+        paginationParams,
+        scrollTTL,
+        withHistory,
+        withDeleted ,
+        debugInfo) =>
+          logger.error("boom, scrollTTL=" + scrollTTL)
+          startScrollEliNew(
+            pathFilter,fieldsFilter,
+            datesFilter,
+            paginationParams,
+            scrollTTL,
+            withHistory,
+            withDeleted ,
+            debugInfo,
+            firstExecution = false)
+      }.get
+      }else {
+      logger.error("COOL!!!!!!!!!! in the else case")
+      val searchResultFuture = ftsService.scroll(scrollId, scrollTTL)
+      val results = withData match {
+        case false =>
+          searchResultFuture.map { ftsResults =>
+            IterationResults(ftsResults.scrollId, ftsResults.total, Some(ftsResults.infotons))
           }
-          val infotons = addIndexTime(infotonsSeq.collect{case FullBox(i) => i}, ftsResults.infotons)
-          IterationResults(ftsResults.scrollId, ftsResults.total, Some(infotons))
-        }
+        case true =>
+          searchResultFuture.flatMap { ftsResults =>
+            irwService
+              .readUUIDSAsync(ftsResults.infotons.map {
+                _.uuid
+              }.toVector, level)
+              .map { infotonsSeq =>
+                if (infotonsSeq.exists(_.isEmpty)) {
+                  val esUuidsSet: Set[String] =
+                    ftsResults.infotons.map(_.uuid)(scala.collection.breakOut[Seq[Infoton], String, Set[String]])
+                  val casUuidsSet: Set[String] = infotonsSeq.collect { case FullBox(i) => i.uuid }(
+                    scala.collection.breakOut[Seq[Box[Infoton]], String, Set[String]]
+                  )
+                  logger.error(
+                    "some uuids retrieved from ES, could not be retrieved from cassandra: " + esUuidsSet
+                      .diff(casUuidsSet)
+                      .mkString("[", ",", "]")
+                  )
+                }
+                val infotons = addIndexTime(infotonsSeq.collect { case FullBox(i) => i }, ftsResults.infotons)
+                IterationResults(ftsResults.scrollId, ftsResults.total, Some(infotons))
+              }
+          }
       }
+      results
     }
-    results
+
   }
 
   def verify(path: String, limit: Int): Future[Boolean] = proxyOps.verify(path, limit)

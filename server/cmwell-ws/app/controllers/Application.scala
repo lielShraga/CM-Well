@@ -41,7 +41,7 @@ import cmwell.util.{BoxedFailure, EmptyBox, FullBox}
 import cmwell.web.ld.cmw.CMWellRDFHelper
 import cmwell.web.ld.exceptions.UnsupportedURIException
 import cmwell.ws.adt.request.{CMWellRequest, CreateConsumer, Search}
-import cmwell.ws.adt.{BulkConsumeState, ConsumeState, SortedConsumeState}
+import cmwell.ws.adt._
 import cmwell.ws.util.RequestHelpers._
 import cmwell.ws.util.TypeHelpers._
 import cmwell.ws.util._
@@ -665,7 +665,9 @@ callback=< [URL] >
         val timeContext = request.attrs.get(Attrs.RequestReceivedTimestamp)
         val normalizedPath = normalizePath(request.path)
         val from = DateParser.parseDate(request.getQueryString("from").getOrElse(""), FromDate).toOption
+        logger.error("boom from=, " + from)
         val to = DateParser.parseDate(request.getQueryString("to").getOrElse(""), ToDate).toOption
+        logger.error(("boom, to=" + to))
         val length = request.getQueryString("length").flatMap(asInt).getOrElse(10)
         val offset = request.getQueryString("offset").flatMap(asInt).getOrElse(0)
         val scrollTtl = request.getQueryString("session-ttl").flatMap(asInt).getOrElse(15).min(60)
@@ -719,7 +721,24 @@ callback=< [URL] >
                   debugInfo = request.queryString.keySet("debug-info")
                 )
                 .flatMap { startScrollResult =>
-                  val rv = createScrollIdDispatcherActorFromIteratorId(startScrollResult.iteratorId,
+                  val actualIteratorId = if(startScrollResult.iteratorId == IteratorState.decodedCmwellScrollId) {
+                    logger.error("boom , going to encode")
+                    logger.error("boom, offset=" + offset + ", length=" + length)
+                    val cis = CreateIteratorState(pathFilter,
+                      fieldFilter,
+                      Some(DatesFilter(from, to)),
+                      PaginationParams(offset, length),
+                      scrollTtl,
+                      withHistory,
+                      withDeleted,
+                      request.queryString.keySet("debug-info"))
+                    IteratorState.encodeCreateIteratorKey(IteratorState.decodedCmwellScrollId) + IteratorState.encode(cis)
+                  }
+                   else {
+                    startScrollResult.iteratorId
+                  }
+                  logger.error("Boom boom boom, encoded scroll id= " + actualIteratorId)
+                  val rv = createScrollIdDispatcherActorFromIteratorId(actualIteratorId,
                                                                        withHistory,
                                                                        (scrollTtl + 5).seconds)
                   fmFut.map { fm =>
@@ -736,6 +755,8 @@ callback=< [URL] >
   private def createScrollIdDispatcherActorFromIteratorId(id: String,
                                                           withHistory: Boolean,
                                                           ttl: FiniteDuration): String = {
+
+    logger.error("lala scroll id=" + id)
     val ar = Grid.createAnon(classOf[IteratorIdDispatcher], id, withHistory, ttl)
     val path = ar.path.toSerializationFormatWithAddress(Grid.me)
     putInCache(path, ar)

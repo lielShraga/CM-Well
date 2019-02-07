@@ -61,6 +61,7 @@ import scala.language.implicitConversions
 import scala.util._
 import org.slf4j.{LoggerFactory, Marker, MarkerFactory}
 
+
 /**
   * Created by israel on 30/06/2016.
   */
@@ -685,8 +686,9 @@ class FTSService(config: Config) extends NsSplitter{
                   indexNames: Seq[String] = Seq.empty,
                   onlyNode: Option[String] = None,
                   partition: String = defaultPartition,
-                  debugInfo: Boolean = false)
+                  debugInfo: Boolean = false, firstExecution:Boolean = true)
                  (implicit executionContext:ExecutionContext, logger:Logger = loger) : Future[FTSStartScrollResponseEliNew] = {
+    logger.error("lala first execution=" + firstExecution)
     logger.debug(s"StartScroll request: $pathFilter, $fieldsFilter, $datesFilter, $paginationParams, $withHistory")
 
     val fields = "system.kind" :: "system.path" :: "system.uuid" :: "system.lastModified" :: "content.length" ::
@@ -732,9 +734,10 @@ class FTSService(config: Config) extends NsSplitter{
       val searchQueryStr = if (debugInfo) Some(request.toString) else None
 
       scrollResponseFuture.map { scrollResponse =>
+        val scrollId = if(firstExecution) "cmwell-iterator" else scrollResponse.getScrollId
         val ftsResponse = FTSScrollResponse(scrollResponse.getHits.totalHits,
-          scrollResponse.getScrollId,
-          esResponseToInfotons(scrollResponse, includeScore = false))
+          scrollId,
+          if (firstExecution) Vector.empty else esResponseToInfotons(scrollResponse, includeScore = false))
         FTSStartScrollResponseEliNew(ftsResponse, searchQueryStr = searchQueryStr)
       }
     }
@@ -1300,8 +1303,7 @@ class FTSService(config: Config) extends NsSplitter{
 
   private def esResponseToInfotons(esResponse: org.elasticsearch.action.search.SearchResponse,
                                    includeScore: Boolean): Vector[Infoton] = {
-
-    if (esResponse.getHits.getHits().nonEmpty) {
+   if (esResponse.getHits.getHits().nonEmpty) {
       val hits = esResponse.getHits.getHits()
       hits.map { hit =>
         val path = hit.field("system.path").getValue[String]
