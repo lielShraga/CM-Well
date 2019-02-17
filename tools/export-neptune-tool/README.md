@@ -36,13 +36,14 @@ for example:
 `ssh -i cmwell-research.pem -N -L 9999:cmwell-poc.xxx.us-east-1.neptune.amazonaws.com:8182 ec2-user@ec2-54-85-12-200.compute-1.amazonaws.com`
 
 The tool persist the last cm-wel-position, tool start time execution and update mode in a local directory: ./config.properties
-In order to mount and persist the position in an aws s3 bucket, you should install s3fs and mount /tmp/cm-well position directory.
+In order to mount and persist the position in an aws s3 bucket, you should install s3fs and mount ./  directory.
 
 `java -jar <your_created_jar_name> --source-cluster "<cm-well-cluster>" --neptune-cluster "<neptune_cluster>" ingest-connection-pool-size`
 
 For Example:
 
 `java -Xmx2000m -jar target/scala-2.12/neptune-export-import-tool-assembly-0.1.jar --source-cluster "10.85.11.111:9000" --neptune-cluster "localhost:9999" --ingest-connection-pool-size  50`
+`java -Xmx2000m -jar target/scala-2.12/neptune-export-import-tool-assembly-0.1.jar --source-cluster "cmwell-prod-cluster.thomsonreuters.com" --neptune-cluster "localhost:9999" --ingest-connection-pool-size  50`
 
 - There are additional optional parameters to run the tool.
  please run `java -jar target/scala-2.12/neptune-poc-export-tool-assembly-0.1.jar --help` 
@@ -52,7 +53,7 @@ in order to see the list of parameters and their meaning
 
 | Param | Description | Required|
 | --- | --- | ---|
-|-s, --source-cluster|the source cluster which data is being exported from| yes|
+|-s, --source-cluster|the source cluster which data is being exported from. can be cmwell cluster or ip| yes|
 |-n, --neptune-cluster |neptune cluster which data is being exported to| yes|                                                                                       
 | -b, --bulk-loader   | export by bulk loader-s3. only for initial load |no|
 | -i, --ingest-connection-pool-size | num of connection pool size when ingest to nptune.default is 5 |no|
