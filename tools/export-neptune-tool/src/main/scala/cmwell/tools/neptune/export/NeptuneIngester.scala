@@ -56,18 +56,19 @@ object NeptuneIngester {
       client.setHttpRequestRetryHandler(new NeptuneIngesterHttpClientRetryHandler())
       httpPost.setHeader("Content-type", "application/json")
       val response = client.execute(httpPost)
-      val resBody = scala.io.Source.fromInputStream(response.getEntity.getContent).mkString
-      val loadId = extractLoadId(resBody)
       val statusCode = response.getStatusLine.getStatusCode
+      val resBody = scala.io.Source.fromInputStream(response.getEntity.getContent).mkString
       if (statusCode == 200) {
+        val loadId = extractLoadId(resBody)
         val loadJobStatus = getLoaderJobStatus(neptuneCluster, loadId)
         client.close()
         loadJobStatus
       } else if (statusCode == 503) {
-        throw ConnectException(scala.io.Source.fromInputStream(response.getEntity.getContent).mkString)
+        throw ConnectException("status code" + statusCode + ", error msg=" + scala.io.Source.fromInputStream(response.getEntity.getContent).mkString)
       }
       else {
-        throw new Throwable(scala.io.Source.fromInputStream(response.getEntity.getContent).mkString)
+        val errorMsg =  extractDetailedMessage(resBody)
+        throw new Throwable("status code=" + statusCode + ",error msg=" + resBody)
       }
     }(ec)
 
@@ -84,17 +85,21 @@ object NeptuneIngester {
         client.close()
         statusCode
       }
-      else if(statusCode == 200 && loadJobstatus == "LOAD_IN_PROGRESS") {
-        Thread.sleep(20000)
+      else if(statusCode == 200 && loadJobstatus == "LOAD_IN_PROGRESS" && !statusErrors(resBody)) {
+        Thread.sleep(2000)
         getLoaderJobStatus(neptuneCluster, loaderId)
       }
       else{
-        throw new Throwable("Error status code=" + statusCode+ " " + scala.io.Source.fromInputStream(response.getEntity.getContent).mkString)
+        throw new Throwable("Error status code=" + statusCode+ " " + resBody)
       }
     }
+  private implicit val formats = DefaultFormats
 
-
-    private implicit val formats = DefaultFormats
+  def statusErrors(body:String) = {
+    val json = body.replaceAll("\n", "")
+    val parsed = net.liftweb.json.parse(json)
+    (parsed \"payload" \ "errors" \ "startIndex").extract[Int] > 0 && (parsed \"payload" \ "errors" \ "endIndex").extract[Int] > 0
+  }
 
     def extractLoadId(resBody:String):String = {
       val json = resBody.replaceAll("\n", "")
@@ -102,13 +107,16 @@ object NeptuneIngester {
       (parsed \ "payload" \ "loadId").extract[String]
     }
 
+  def extractDetailedMessage(resBody:String):String = {
+    val json = resBody.replaceAll("\n", "")
+    val parsed = net.liftweb.json.parse(json)
+    (parsed \ "detailedMessage").extract[String]
+  }
+
     def extractLoadJobstatus(resBody:String) = {
       val json = resBody.replaceAll("\n", "")
       val parsed = net.liftweb.json.parse(json)
       (parsed \"payload" \ "overallStatus" \ "status").extract[String]
     }
-
-
-
 
 }

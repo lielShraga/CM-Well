@@ -101,14 +101,14 @@ class ExportToNeptuneManager(ingestConnectionPoolSize: Int) {
       }else {
         buildSparqlCommandAndIngestToNeptuneViaSparqlAPI(neptuneCluster, ds, nextPosition, updateMode, readInputStreamDuration, totalInfotons)
       }
-      consumeBulkAndIngest(nextPosition, sourceCluster, neptuneCluster, updateMode, lengthHint, qp, toolStartTime, bulkLoader, proxyHost, proxyPort, automaticUpdateMode = true)
+      consumeBulkAndIngest(nextPosition, sourceCluster, neptuneCluster, updateMode, lengthHint, qp, toolStartTime, bulkLoader, proxyHost, proxyPort)
     }
     else {
       //This is an automatic update mode
       val nextPosition = if (!updateMode && !PropertiesStore.isAutomaticUpdateModePersist()) CmWellConsumeHandler.retrivePositionFromCreateConsumer(sourceCluster, lengthHint, qp, updateMode, true, Instant.parse(PropertiesStore.retrieveStartTime().get)) else position
       logger.info("Export from cm-well completed successfully, no additional data to consume..trying to re-consume in 0.5 minute")
       Thread.sleep(30000)
-      consumeBulkAndIngest(nextPosition, sourceCluster, neptuneCluster, updateMode = true, lengthHint, qp, toolStartTime, bulkLoader, proxyHost, proxyPort)
+      consumeBulkAndIngest(nextPosition, sourceCluster, neptuneCluster, updateMode = true, lengthHint, qp, toolStartTime, bulkLoader, proxyHost, proxyPort, automaticUpdateMode = true)
     }
     res
   }
@@ -125,11 +125,13 @@ class ExportToNeptuneManager(ingestConnectionPoolSize: Int) {
       val responseFuture = loaderPostWithRetry(neptuneCluster, fileName)
       responseFuture.onComplete(_ => {
         val endTimeMillis = System.currentTimeMillis()
-        val durationSeconds = (endTimeMillis - startTimeMillis) / 1000
-        logger.info("Bulk Statistics: Duration of ingest to neptune:" + durationSeconds + " seconds, total infotons :" + totalInfotons + "===total time===" + (readInputStreamDuration + durationSeconds))
-        logger.info("About to persist position=" + nextPosition)
+        val neptuneDurationSec = (endTimeMillis - startTimeMillis) / 1000
         PropertiesStore.persistPosition(nextPosition)
-        logger.info("Persist position successfully")
+        logger.info("Bulk has been ingested successfully")
+        val totalTime = readInputStreamDuration + neptuneDurationSec
+        val summaryLogMsg = "Summary:\n Total Infotons: " + totalInfotons + "\tConsume Duration: "+ readInputStreamDuration + "\tNeptune Ingest Duration: "+ neptuneDurationSec + "\ttotal time: " + totalTime + "\tAvg Infotons/sec: "+ (totalInfotons.toLong / totalTime)
+        logger.info(summaryLogMsg)
+        print(summaryLogMsg + "\r")
         blockingQueue.take()
       })
   }
@@ -161,11 +163,13 @@ class ExportToNeptuneManager(ingestConnectionPoolSize: Int) {
 
       Future.sequence(neptuneFutureResults.toList).onComplete(_ => {
         val endTimeMillis = System.currentTimeMillis()
-        val durationSeconds = (endTimeMillis - startTimeMillis) / 1000
-        logger.info("Bulk Statistics: Duration of ingest to neptune:" + durationSeconds + " seconds, total infotons :" + totalInfotons + ",total time = " + (readInputStreamDuration + durationSeconds))
-        logger.info("About to persist position=" + nextPosition)
+        val neptuneDurationSec = (endTimeMillis - startTimeMillis) / 1000
         PropertiesStore.persistPosition(nextPosition)
-        logger.info("Persist position successfully")
+        logger.info("Bulk has been ingested successfully")
+        val totalTime = readInputStreamDuration + neptuneDurationSec
+        val summaryLogMsg = "Summary:\n Total Infotons: " + totalInfotons + "\tConsume Duration: "+ readInputStreamDuration + "\tNeptune Ingest Duration: "+ neptuneDurationSec + "\ttotal time: " + totalTime + "\tAvg Infotons/sec: "+ (totalInfotons.toLong / totalTime)
+        logger.info(summaryLogMsg)
+        print(summaryLogMsg + "\r")
         blockingQueue.take()
       })
 
@@ -192,7 +196,7 @@ class ExportToNeptuneManager(ingestConnectionPoolSize: Int) {
         logger.error("Going to retry till neptune will be available")
         akka.pattern.after(delay, scheduler)(retry(delay)(task))
       case e: Throwable if retries > 0 =>
-        logger.error("Failed to ingest,", e.getMessage)
+        logger.error("Failed to ingest,", e.printStackTrace())
         logger.error("Going to retry, retry count=" + retries)
         akka.pattern.after(delay, scheduler)(retry(delay, retries - 1)(task))
       case e: Throwable if retries == 0 =>
@@ -202,3 +206,10 @@ class ExportToNeptuneManager(ingestConnectionPoolSize: Int) {
   }
 
 }
+
+
+//object ExportToNeptuneManagerMain extends App {
+//  val exportImportHandler = new ExportToNeptuneManager(5)
+//  exportImportHandler.exportToNeptune("localhost:9000", "localhost:9998", 16000, false, None, bulkLoader = true, None, None)
+//
+//}
