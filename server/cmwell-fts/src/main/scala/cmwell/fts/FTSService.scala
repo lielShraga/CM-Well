@@ -478,7 +478,6 @@ class FTSService(config: Config) extends NsSplitter{
                               (implicit executionContext:ExecutionContext, logger:Logger = loger) : Future[SuccessfulBulkIndexResult] = {
 
     logger.debug(s"indexRequests:$indexRequests")
-
     val promise = Promise[SuccessfulBulkIndexResult]
     val bulkRequest = client.prepareBulk()
     bulkRequest.request().add(indexRequests.map{_.esAction}.asJava)
@@ -521,7 +520,6 @@ class FTSService(config: Config) extends NsSplitter{
           }
 
           val nonRecoverableBulkIndexResults = SuccessfulBulkIndexResult.fromFailed(unexpectedErrors.map { _._1 })
-
           if (recoverableFailures.length > 0) {
             if (numOfRetries > 0) {
               logger.warn(s"will retry recoverable failures after waiting for $waitBetweenRetries milliseconds")
@@ -541,9 +539,19 @@ class FTSService(config: Config) extends NsSplitter{
               promise.success(SuccessfulBulkIndexResult(indexRequests, bulkResponse))
             }
           } else {
-            promise.success(SuccessfulBulkIndexResult(indexRequests, bulkResponse))
-          }
 
+            val bulks = bulkResponse.getItems.map { sir =>
+                  get(sir.getId, sir.getIndex)(executionContext).map {
+                  case Some((ti, isActualCurrent)) => SuccessfulIndexResult(sir.getId, Option(ti.indexTime))
+                  case None => SuccessfulIndexResult(sir.getId, None)
+                }
+              }
+            Future.sequence(bulks.toList).onComplete{
+              case Success(x) => promise.success(SuccessfulBulkIndexResult(x))
+              case Failure(exception) => logger.error(s"unexpected Exception from Elasticsearch.", exception)
+                                          promise.failure(exception)
+            }
+          }
         }
 
       case err @ Failure(exception) =>
