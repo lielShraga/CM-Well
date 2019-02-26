@@ -504,12 +504,17 @@ class FTSService(config: Config) extends NsSplitter{
               itemResponse.getFailureMessage.contains("EsRejectedExecutionException")
           }
 
-          // filter expected errors that can happen since since we're at least once and not exactly once
-          val unexpectedErrors = nonRecoverableFailures.filterNot{case (bulkItemResponse, _) =>
-            bulkItemResponse.getFailureMessage.startsWith("VersionConflictEngineException")
+          val (versionConflictErrors, unexpectedErrors) = nonRecoverableFailures.partition {
+            case (itemResponse, _) =>
+              itemResponse.getFailureMessage.contains("VersionConflictEngineException")
           }
 
           // log errors
+          versionConflictErrors.foreach{ case (itemResponse, esIndexRequest) =>
+            val infotonPath = infotonPathFromDocWriteRequest(esIndexRequest.esAction)
+            logger.error(s"ElasticSearch non recoverable version conflict failure on doc id:${itemResponse.getId}, path: $infotonPath . " +
+              s"due to: ${itemResponse.getFailureMessage}")
+          }
           unexpectedErrors.foreach{ case (itemResponse, esIndexRequest) =>
             val infotonPath = infotonPathFromDocWriteRequest(esIndexRequest.esAction)
             logger.error(s"ElasticSearch non recoverable failure on doc id:${itemResponse.getId}, path: $infotonPath . " +
@@ -540,7 +545,22 @@ class FTSService(config: Config) extends NsSplitter{
               logger.error(s"exhausted all retries attempts. logging failures to RED_LOG and returning results ")
               promise.success(SuccessfulBulkIndexResult(indexRequests, bulkResponse))
             }
-          } else {
+          } else if(versionConflictErrors.length > 0){
+            val bulks = versionConflictErrors.map { sir =>
+              get(sir._1.getId, sir._1.getIndex)(executionContext).transform {
+                case Success(esInfotonRes) => esInfotonRes match {
+                  case Some(ti) => Success(SuccessfulIndexResult(sir._1.getId, Option(ti._1.indexTime)))
+                  case None => Success(SuccessfulIndexResult(sir._1.getId, None))
+                }
+                case Failure(e) => logger.error("Got exception from es while get index time for version conflict, error=" +
+                  e.getMessage + ",uuid=" + sir._1.getId)
+                  Failure(e)
+              }
+            }
+            val allSucessIndexes = cmwell.util.concurrent.successes(bulks.toList)
+            allSucessIndexes.map {x=> promise.success(bulkSuccessfulResult ++  SuccessfulBulkIndexResult(x))}
+          }
+          else {
             promise.success(SuccessfulBulkIndexResult(indexRequests, bulkResponse))
           }
 
