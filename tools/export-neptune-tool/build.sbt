@@ -19,3 +19,4 @@ libraryDependencies ++= Seq(
 #some tests
 #another test
 #third test
+#4 test
