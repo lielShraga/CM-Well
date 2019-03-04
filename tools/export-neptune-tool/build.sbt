@@ -16,3 +16,4 @@ libraryDependencies ++= Seq(
   "com.amazonaws" % "aws-java-sdk-s3" % "1.11.483" excludeAll ExclusionRule(organization = "commons-logging"),
   "net.liftweb" %% "lift-json" % "3.3.0"
 )
+#some tests
