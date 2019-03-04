@@ -507,7 +507,7 @@ class FTSService(config: Config) extends NsSplitter{
           // log errors
           versionConflictErrors.foreach { case (itemResponse, esIndexRequest) =>
             val infotonPath = infotonPathFromDocWriteRequest(esIndexRequest.esAction)
-            logger.info(s"ElasticSearch non recoverable version conflict failure on doc id:${itemResponse.getId}, path: $infotonPath . " +
+            logger.error(s"ElasticSearch non recoverable version conflict failure on doc id:${itemResponse.getId}, path: $infotonPath . " +
               s"due to: ${itemResponse.getFailureMessage}" + ", can be caused in replay or in parallel writes case")
           }
           unexpectedErrors.foreach { case (itemResponse, esIndexRequest) =>
@@ -529,13 +529,10 @@ class FTSService(config: Config) extends NsSplitter{
             _._2
           }, new DateTime().getMillis)
           val reResponse =
-            if (numOfRetries > 0)
-              SimpleScheduler.scheduleFuture[SuccessfulBulkIndexResult](waitBetweenRetries.milliseconds) {
-                executeBulkIndexRequests(updatedIndexRequests, numOfRetries - 1, (waitBetweenRetries * 1.1).toLong)
-              }
-            else {
-              logger.error(s"exhausted all retries attempts. logging failures to RED_LOG and returning results ")
-              Future.successful(SuccessfulBulkIndexResult.fromFailed(recoverableFailures.map(_._1)))
+            if(recoverableFailures.length > 0) {
+              retryRecoverableErrors(numOfRetries, waitBetweenRetries, recoverableFailures, updatedIndexRequests)
+            }else{
+              Future(SuccessfulBulkIndexResult(Nil, Nil))
             }
           val res = for {
             conflicts <- versionConflictBulkIndexResults
@@ -543,78 +540,7 @@ class FTSService(config: Config) extends NsSplitter{
           } yield bulkSuccessfulResult ++ nonRecoverableBulkIndexResults ++ recoverable ++ conflicts
           promise.completeWith(res)
         }
-/*
-        if (!bulkResponse.hasFailures) {
-          promise.success(SuccessfulBulkIndexResult.fromSuccessful(indexRequests, bulkResponse.getItems))
-        } else {
 
-          val indexedIndexRequests = indexRequests.toIndexedSeq
-          val bulkSuccessfulResult =
-            SuccessfulBulkIndexResult.fromSuccessful(indexRequests, bulkResponse.getItems.filter { !_.isFailed })
-          val allFailures = bulkResponse.getItems.filter(_.isFailed).map { itemResponse =>
-            (itemResponse, indexedIndexRequests(itemResponse.getItemId))
-          }
-
-          val (recoverableFailures, nonRecoverableFailures) = allFailures.partition {
-            case (itemResponse, _) =>
-              itemResponse.getFailureMessage.contains("EsRejectedExecutionException")
-          }
-
-          val (versionConflictErrors, unexpectedErrors) = nonRecoverableFailures.partition {
-            case (itemResponse, _) =>
-              itemResponse.getFailureMessage.contains("VersionConflictEngineException")
-          }
-
-          // log errors
-          versionConflictErrors.foreach{ case (itemResponse, esIndexRequest) =>
-            val infotonPath = infotonPathFromDocWriteRequest(esIndexRequest.esAction)
-            logger.info(s"ElasticSearch non recoverable version conflict failure on doc id:${itemResponse.getId}, path: $infotonPath . " +
-              s"due to: ${itemResponse.getFailureMessage}" + ", can be caused in replay or in parallel writes case")
-          }
-          unexpectedErrors.foreach{ case (itemResponse, esIndexRequest) =>
-            val infotonPath = infotonPathFromDocWriteRequest(esIndexRequest.esAction)
-            logger.error(s"ElasticSearch non recoverable failure on doc id:${itemResponse.getId}, path: $infotonPath . " +
-              s"due to: ${itemResponse.getFailureMessage}")
-          }
-          recoverableFailures.foreach{ case (itemResponse, esIndexRequest) =>
-            val infotonPath = infotonPathFromDocWriteRequest(esIndexRequest.esAction)
-            logger.error(s"ElasticSearch recoverable failure on doc id:${itemResponse.getId}, path: $infotonPath . due to: ${itemResponse.getFailureMessage}")
-          }
-
-          val nonRecoverableBulkIndexResults = SuccessfulBulkIndexResult.fromFailed(unexpectedErrors.map { _._1 })
-          val versionConflictBulkIndexResults = createBulkIndexForVersionConflict(versionConflictErrors)
-
-          if (recoverableFailures.length > 0) {
-            if (numOfRetries > 0) {
-              logger.warn(s"will retry recoverable failures after waiting for $waitBetweenRetries milliseconds")
-              val updatedIndexRequests = updateIndexRequests(recoverableFailures.map { _._2 }, new DateTime().getMillis)
-
-              val reResponse =
-                SimpleScheduler.scheduleFuture[SuccessfulBulkIndexResult](waitBetweenRetries.milliseconds)(
-                  {
-                    executeBulkIndexRequests(updatedIndexRequests, numOfRetries - 1, (waitBetweenRetries * 1.1).toLong)
-                  }
-                )
-              val vConflictAndreRes = Future.sequence(List(reResponse, versionConflictBulkIndexResults)).
-                map(res => res.fold(SuccessfulBulkIndexResult(Nil, Nil))(_ ++ _))
-              promise.completeWith(
-                vConflictAndreRes.map {bulkSuccessfulResult ++ nonRecoverableBulkIndexResults ++ _}
-              )
-            } else {
-              logger.error(s"exhausted all retries attempts. logging failures to RED_LOG and returning results ")
-              promise.completeWith(versionConflictBulkIndexResults.map{SuccessfulBulkIndexResult(indexRequests, bulkResponse) ++ _})
-            }
-          }
-          else if(versionConflictErrors.length > 0)
-            {
-              promise.completeWith(versionConflictBulkIndexResults.map{bulkSuccessfulResult ++ nonRecoverableBulkIndexResults ++ _})
-            }
-          else {
-            promise.success(SuccessfulBulkIndexResult(indexRequests, bulkResponse))
-          }
-
-        }
-*/
       case err @ Failure(exception) =>
         val errorId = err.##
         if (exception.getLocalizedMessage.contains("EsRejectedExecutionException")) {
@@ -643,6 +569,18 @@ class FTSService(config: Config) extends NsSplitter{
 
   }
 
+
+  private def retryRecoverableErrors(numOfRetries: Int, waitBetweenRetries: Long, recoverableFailures: Array[(BulkItemResponse,
+    ESIndexRequest)], updatedIndexRequests: Iterable[ESIndexRequest])(implicit executionContext:ExecutionContext, logger:Logger = loger) = {
+    if (numOfRetries > 0)
+      SimpleScheduler.scheduleFuture[SuccessfulBulkIndexResult](waitBetweenRetries.milliseconds) {
+        executeBulkIndexRequests(updatedIndexRequests, numOfRetries - 1, (waitBetweenRetries * 1.1).toLong)
+      }
+    else {
+      logger.error(s"exhausted all retries attempts. logging failures to RED_LOG and returning results ")
+      Future.successful(SuccessfulBulkIndexResult.fromFailed(recoverableFailures.map(_._1)))
+    }
+  }
 
   def createBulkIndexForVersionConflict(versionConflictErrors: Array[(BulkItemResponse, ESIndexRequest)])
                                        (implicit executionContext:ExecutionContext, logger:Logger = loger)  = {
