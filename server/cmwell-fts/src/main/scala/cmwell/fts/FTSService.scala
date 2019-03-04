@@ -478,16 +478,72 @@ class FTSService(config: Config) extends NsSplitter{
                               (implicit executionContext:ExecutionContext, logger:Logger = loger) : Future[SuccessfulBulkIndexResult] = {
 
     logger.debug(s"indexRequests:$indexRequests")
-
     val promise = Promise[SuccessfulBulkIndexResult]
     val bulkRequest = client.prepareBulk()
     bulkRequest.request().add(indexRequests.map{_.esAction}.asJava)
     logRequest("executeBulkIndexRequests", s"number of index requests: ${indexRequests.size}")
-
     val esResponse = injectFuture[BulkResponse](bulkRequest.execute(_))
-
     esResponse.onComplete {
       case Success(bulkResponse) =>
+        if (!bulkResponse.hasFailures) {
+          promise.success(SuccessfulBulkIndexResult.fromSuccessful(indexRequests, bulkResponse.getItems))
+        } else {
+          val indexedIndexRequests = indexRequests.toIndexedSeq
+          val bulkSuccessfulResult =
+            SuccessfulBulkIndexResult.fromSuccessful(indexRequests, bulkResponse.getItems.filter {
+              !_.isFailed
+            })
+          val allFailures = bulkResponse.getItems.filter(_.isFailed).map { itemResponse =>
+            (itemResponse, indexedIndexRequests(itemResponse.getItemId))
+          }
+          val (recoverableFailures, nonRecoverableFailures) = allFailures.partition {
+            case (itemResponse, _) =>
+              itemResponse.getFailureMessage.contains("EsRejectedExecutionException")
+          }
+          val (versionConflictErrors, unexpectedErrors) = nonRecoverableFailures.partition {
+            case (itemResponse, _) =>
+              itemResponse.getFailureMessage.contains("VersionConflictEngineException")
+          }
+          // log errors
+          versionConflictErrors.foreach { case (itemResponse, esIndexRequest) =>
+            val infotonPath = infotonPathFromDocWriteRequest(esIndexRequest.esAction)
+            logger.info(s"ElasticSearch non recoverable version conflict failure on doc id:${itemResponse.getId}, path: $infotonPath . " +
+              s"due to: ${itemResponse.getFailureMessage}" + ", can be caused in replay or in parallel writes case")
+          }
+          unexpectedErrors.foreach { case (itemResponse, esIndexRequest) =>
+            val infotonPath = infotonPathFromDocWriteRequest(esIndexRequest.esAction)
+            logger.error(s"ElasticSearch non recoverable failure on doc id:${itemResponse.getId}, path: $infotonPath . " +
+              s"due to: ${itemResponse.getFailureMessage}")
+          }
+          recoverableFailures.foreach { case (itemResponse, esIndexRequest) =>
+            val infotonPath = infotonPathFromDocWriteRequest(esIndexRequest.esAction)
+            logger.error(s"ElasticSearch recoverable failure on doc id:${itemResponse.getId}, path: $infotonPath . due to: ${itemResponse.getFailureMessage}")
+          }
+          val nonRecoverableBulkIndexResults = SuccessfulBulkIndexResult.fromFailed(unexpectedErrors.map {
+            _._1
+          })
+          val versionConflictBulkIndexResults = createBulkIndexForVersionConflict(versionConflictErrors)
+          //recoverable
+          logger.warn(s"will retry recoverable failures after waiting for $waitBetweenRetries milliseconds")
+          val updatedIndexRequests = updateIndexRequests(recoverableFailures.map {
+            _._2
+          }, new DateTime().getMillis)
+          val reResponse =
+            if (numOfRetries > 0)
+              SimpleScheduler.scheduleFuture[SuccessfulBulkIndexResult](waitBetweenRetries.milliseconds) {
+                executeBulkIndexRequests(updatedIndexRequests, numOfRetries - 1, (waitBetweenRetries * 1.1).toLong)
+              }
+            else {
+              logger.error(s"exhausted all retries attempts. logging failures to RED_LOG and returning results ")
+              Future.successful(SuccessfulBulkIndexResult.fromFailed(recoverableFailures.map(_._1)))
+            }
+          val res = for {
+            conflicts <- versionConflictBulkIndexResults
+            recoverable <- reResponse
+          } yield bulkSuccessfulResult ++ nonRecoverableBulkIndexResults ++ recoverable ++ conflicts
+          promise.completeWith(res)
+        }
+/*
         if (!bulkResponse.hasFailures) {
           promise.success(SuccessfulBulkIndexResult.fromSuccessful(indexRequests, bulkResponse.getItems))
         } else {
@@ -558,7 +614,7 @@ class FTSService(config: Config) extends NsSplitter{
           }
 
         }
-
+*/
       case err @ Failure(exception) =>
         val errorId = err.##
         if (exception.getLocalizedMessage.contains("EsRejectedExecutionException")) {
@@ -592,15 +648,13 @@ class FTSService(config: Config) extends NsSplitter{
                                        (implicit executionContext:ExecutionContext, logger:Logger = loger)  = {
     val bulks = versionConflictErrors.map { bulkResponse =>
       get(bulkResponse._1.getId, bulkResponse._1.getIndex)(executionContext).transform {
-        case Success(esInfotonRes) => esInfotonRes match {
-          case Some(ti) => Success(SuccessfulIndexResult(bulkResponse._1.getId, Option(ti._1.indexTime)))
-          case None =>
-            logger.error("Failed to retrieve exisitng index time for uuid=" + bulkResponse._1.getId)
-            Success(FailedIndexResult(bulkResponse._1.getId, "Failed to retrieve exisitng index time for uuid=" + bulkResponse._1.getId,
-              bulkResponse._1.getItemId))
-        }
+        case Success(Some((thinInfoton, _))) => Success(SuccessfulIndexResult(thinInfoton.uuid, Option(thinInfoton.indexTime)))
+        case Success(None) =>
+          logger.error("Failed to retrieve existing index time for uuid=" + bulkResponse._1.getId)
+          Success(FailedIndexResult(bulkResponse._1.getId, "Failed to retrieve existing index time for uuid=" + bulkResponse._1.getId,
+            bulkResponse._1.getItemId))
         case Failure(e) =>
-          logger.error("Got exception from es while get index time in version conflict case, uuid=" + bulkResponse._1.getId, e)
+          logger.error("Got exception from ES while getting index time in version conflict case, uuid=" + bulkResponse._1.getId, e)
           Success(FailedIndexResult(bulkResponse._1.getId, e.getMessage, bulkResponse._1.getItemId))
       }
     }
