@@ -17,3 +17,4 @@ libraryDependencies ++= Seq(
   "net.liftweb" %% "lift-json" % "3.3.0"
 )
 #some tests
+#another test
