@@ -507,7 +507,7 @@ class FTSService(config: Config) extends NsSplitter{
           // log errors
           versionConflictErrors.foreach { case (itemResponse, esIndexRequest) =>
             val infotonPath = infotonPathFromDocWriteRequest(esIndexRequest.esAction)
-            logger.error(s"ElasticSearch non recoverable version conflict failure on doc id:${itemResponse.getId}, path: $infotonPath . " +
+            logger.info(s"ElasticSearch non recoverable version conflict failure on doc id:${itemResponse.getId}, path: $infotonPath . " +
               s"due to: ${itemResponse.getFailureMessage}" + ", can be caused in replay or in parallel writes case")
           }
           unexpectedErrors.foreach { case (itemResponse, esIndexRequest) =>
