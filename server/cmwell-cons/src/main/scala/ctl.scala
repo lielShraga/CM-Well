@@ -1638,7 +1638,7 @@ abstract class Host(user: String,
     //create the first index in advance. It resolves the issue of meta ns cache quering a non existant index
     val start = System.currentTimeMillis()
     println("Sending first index creation at " + start)
-    val firstIndexCreation = command(s"""curl -s -X PUT http://${hosts(0)}:$esMasterPort/cm_well_p0_0?timeout=2m""", hosts(0), false)
+    val firstIndexCreation = command(s"""curl -s -X PUT http://${hosts(0)}:$esMasterPort/cm_well_p0_0?timeout=5m""", hosts(0), false)
     val end = System.currentTimeMillis()
     println("Complete first index creation at " + end)
     val time = (end - start) /1000
