@@ -1636,16 +1636,22 @@ abstract class Host(user: String,
         sys.exit(1)
     }
     //create the first index in advance. It resolves the issue of meta ns cache quering a non existant index
-    val firstIndexCreation = command(s"""curl -s -X PUT http://${hosts(0)}:$esMasterPort/cm_well_p0_0""", hosts(0), false)
+    val start = System.currentTimeMillis()
+    println("Sending first index creation at " + start)
+    val firstIndexCreation = command(s"""curl -s -X PUT http://${hosts(0)}:$esMasterPort/cm_well_p0_0?timeout=2m""", hosts(0), false)
+    val end = System.currentTimeMillis()
+    println("Complete first index creation at " + end)
+    val time = (end - start) /1000
+    println("total time for waiting=" + time)
     firstIndexCreation match {
       case Success(res) =>
         if (res.trim != """{"acknowledged":true,"shards_acknowledged":true,"index":"cm_well_p0_0"}""") {
           println(s"Elasticsearch first index creation failed. The response was: $res")
-          sys.exit(1)
+//          sys.exit(1)
         }
       case Failure(ex) =>
         println(s"Elasticsearch first index creation failed with: $ex")
-        sys.exit(1)
+//        sys.exit(1)
     }
 //    command(s"curl -s -X POST http://${pingAddress}:$esRegPort/cm_well_p0_0/", hosts(0), false)
     // create kafka topics
