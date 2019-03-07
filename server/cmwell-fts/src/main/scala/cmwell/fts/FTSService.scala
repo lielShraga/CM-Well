@@ -989,30 +989,29 @@ class FTSService(config: Config) extends NsSplitter{
       val name = filter.name + "_" + counter
       counter += 1
       filtersMap.put(name, filter)
-
       val aggBuilder:AggregationBuilder = filter match {
         case TermAggregationFilter(_, field, size, _) =>
-          AggregationBuilders.terms(name).field(field).size(size)
+          AggregationBuilders.terms(name).field(field + ".%exact").size(size)
         case StatsAggregationFilter(_, field) =>
-          AggregationBuilders.stats(name).field(field)
+          AggregationBuilders.stats(name).field(field + ".%exact")
         case HistogramAggregationFilter(_, field, interval, minDocCount, extMin, extMax, _) =>
           val eMin = extMin.asInstanceOf[Option[java.lang.Double]].orNull
           val eMax = extMax.asInstanceOf[Option[java.lang.Double]].orNull
           AggregationBuilders
             .histogram(name)
-            .field(field)
+            .field(field + ".%exact")
             .interval(interval)
             .minDocCount(minDocCount)
             .extendedBounds(eMin, eMax)
         case SignificantTermsAggregationFilter(_, field, backGroundTermOpt, minDocCount, size, _) =>
           val sigTermsBuilder =
-            AggregationBuilders.significantTerms(name).field(field).minDocCount(minDocCount).size(size)
+            AggregationBuilders.significantTerms(name).field(field + ".%exact").minDocCount(minDocCount).size(size)
           backGroundTermOpt.foreach { backGroundTerm =>
             sigTermsBuilder.backgroundFilter(termQuery(backGroundTerm._1, backGroundTerm._2))
           }
           sigTermsBuilder
         case CardinalityAggregationFilter(_, field, precisionThresholdOpt) =>
-          val cardinalityAggBuilder = AggregationBuilders.cardinality(name).field(field)
+          val cardinalityAggBuilder = AggregationBuilders.cardinality(name).field(field + ".%exact")
           precisionThresholdOpt.foreach { precisionThreshold =>
             cardinalityAggBuilder.precisionThreshold(precisionThreshold)
           }
