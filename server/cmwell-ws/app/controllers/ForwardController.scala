@@ -14,15 +14,20 @@
   */
 package controllers
 
+import java.net.URLEncoder
+
 import akka.actor.ActorSystem
 import akka.http.scaladsl.Http
-import akka.http.scaladsl.model.{HttpHeader, HttpRequest}
+import akka.http.scaladsl.model.headers.RawHeader
+import akka.http.scaladsl.model.{HttpHeader, HttpRequest, Uri}
 import akka.stream.scaladsl.Source
 import akka.stream.{ActorMaterializer, ActorMaterializerSettings}
 import akka.util.ByteString
 import com.typesafe.scalalogging.LazyLogging
 import javax.inject._
 import play.api.mvc._
+import akka.http.scaladsl.client.RequestBuilding.Get
+import akka.http.scaladsl.model.Uri.Query
 
 import scala.concurrent._
 
@@ -38,8 +43,10 @@ class ForwardController @Inject()(components: ControllerComponents)(implicit ec:
   //TODO Moreover: support all response statuses, if originalResp is 301 we should also return 301. Support query parameters and request headers forwarding...
 
   def handleGet(host: String, path: String): Action[AnyContent] = Action.async { implicit req =>
-    val url = s"${if (host.startsWith("http")) host else s"http://$host"}/$path"
-    Http().singleRequest(HttpRequest(uri = url)).flatMap { originalResp =>
+    val queryStr = if(req.rawQueryString.isEmpty) "" else s"?${req.rawQueryString}"
+    val url = s"${if (host.startsWith("http")) host else s"http://$host"}/$path$queryStr"
+    val request = req.headers.get("reutersuuid").fold(Get(url))(uuid => Get(url).addHeader(RawHeader.apply("reutersuuid", uuid)))
+    Http().singleRequest(request).flatMap { originalResp =>
       val contentType = originalResp.entity.contentType.toString()
       byteStringSourceToString(originalResp.entity.dataBytes).
         map(payload => addHeaders(originalResp.headers, Ok(payload)).as(contentType))
@@ -49,6 +56,7 @@ class ForwardController @Inject()(components: ControllerComponents)(implicit ec:
   private def byteStringSourceToString(bs: Source[ByteString, Any]): Future[String] = bs.runFold(ByteString.empty)(_++_).map(_.utf8String)
   private def addHeaders(headers: Seq[HttpHeader], result: Result): Result = {
     logger.info("Response Headers:" + headers.mkString(","))
-    headers.foldLeft(result) { (r, h) => r.withHeaders(h.name() -> h.value()) }
+    headers.foldLeft(result) { (r, h) => r.withHeaders(h.name() -> h.value())}
   }
+
 }
